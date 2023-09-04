@@ -1,19 +1,59 @@
 const std = @import("std");
-const deps = @import("deps.zig");
 
-const Builder = std.build.Builder;
+// Although this function looks imperative, note that its job is to
+// declaratively construct a build graph that will be executed by an external
+// runner.
+pub fn build(b: *std.Build) !void {
+    // Standard target options allows the person running `zig build` to choose
+    // what target to build for. Here we do not override the defaults, which
+    // means any target is allowed, and the default is native. Other options
+    // for restricting supported target set are available.
+    const target = b.standardTargetOptions(.{});
+    // Standard optimization options allow the person running `zig build` to select
+    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
+    // set a preferred release mode, allowing the user to decide how to optimize.
+    const optimize = b.standardOptimizeOption(.{});
 
-pub fn build(b: *Builder) void {
-    var target = b.standardTargetOptions(.{});
-    if (target.isGnuLibC()) target.abi = .musl;
+    //const gitCloneCmd = [_][]const u8{"git", "clone", "https://git.openldap.org/openldap/openldap.git", "libs/openldap"};
 
-    const mode = b.standardReleaseOptions();
+    var dir = std.fs.cwd().openDir("libs/openldap/libraries/liblmdb", .{}) catch {
+        @panic("run \"git clone https://git.openldap.org/openldap/openldap.git libs/openldap\" then rebuild.");
+    };
+    dir.close();
 
-    const tests = b.addTest("lmdb.zig");
-    tests.setTarget(target);
-    tests.setBuildMode(mode);
-    deps.addAllTo(tests);
+    const lib = b.addStaticLibrary(.{
+        .name = "lmdb",
+        // In this case the main source file is merely a path, however, in more
+        // complicated build scripts, this could be a generated file.
+        .root_source_file = .{ .path = "lmdb.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    lib.linkLibC();
+    lib.addIncludePath(std.build.LazyPath.relative("libs/openldap/libraries/liblmdb"));
+    lib.addCSourceFiles(&[_][]const u8{"libs/openldap/libraries/liblmdb/mdb.c", "libs/openldap/libraries/liblmdb/midl.c"}, &[_][]const u8{"-fno-sanitize=undefined", "-fno-sanitize=undefined"});
 
-    const test_step = b.step("test", "Run libary tests");
-    test_step.dependOn(&tests.step);
+    // This declares intent for the library to be installed into the standard
+    // location when the user invokes the "install" step (the default step when
+    // running `zig build`).
+    b.installArtifact(lib);
+
+    // Creates a step for unit testing. This only builds the test executable
+    // but does not run it.
+    const main_tests = b.addTest(.{
+        .root_source_file = .{ .path = "lmdb.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    main_tests.linkLibC();
+    main_tests.addIncludePath(std.build.LazyPath.relative("libs/openldap/libraries/liblmdb"));
+    main_tests.addCSourceFiles(&[_][]const u8{"libs/openldap/libraries/liblmdb/mdb.c", "libs/openldap/libraries/liblmdb/midl.c"}, &[_][]const u8{"-fno-sanitize=undefined", "-fno-sanitize=undefined"});
+
+    const run_main_tests = b.addRunArtifact(main_tests);
+
+    // This creates a build step. It will be visible in the `zig build --help` menu,
+    // and can be selected like this: `zig build test`
+    // This will evaluate the `test` step rather than the default, which is "install".
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&run_main_tests.step);
 }
